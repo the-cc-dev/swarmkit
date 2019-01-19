@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"net"
 
 	"github.com/docker/docker/pkg/plugingetter"
@@ -11,7 +12,6 @@ import (
 	"github.com/docker/swarmkit/manager/allocator"
 	"github.com/docker/swarmkit/manager/allocator/networkallocator"
 	"github.com/docker/swarmkit/manager/state/store"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -199,8 +199,10 @@ func (s *Server) removeNetwork(id string) error {
 			return status.Errorf(codes.Internal, "could not find services using network %s: %v", id, err)
 		}
 
-		if len(services) != 0 {
-			return status.Errorf(codes.FailedPrecondition, "network %s is in use by service %s", id, services[0].ID)
+		for _, service := range services {
+			if !service.PendingDelete {
+				return status.Errorf(codes.FailedPrecondition, "network %s is in use by service %s", id, service.ID)
+			}
 		}
 
 		tasks, err := store.FindTasks(tx, store.ByReferencedNetworkID(id))
@@ -214,7 +216,12 @@ func (s *Server) removeNetwork(id string) error {
 			}
 		}
 
-		return store.DeleteNetwork(tx, id)
+		network := store.GetNetwork(tx, id)
+		if network == nil {
+			return status.Errorf(codes.NotFound, "network %s not found", id)
+		}
+		network.PendingDelete = true
+		return store.UpdateNetwork(tx, network)
 	})
 }
 

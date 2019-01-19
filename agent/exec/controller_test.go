@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -10,7 +11,6 @@ import (
 	"github.com/docker/swarmkit/log"
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 )
 
 func TestResolve(t *testing.T) {
@@ -403,7 +403,7 @@ func TestDesiredStateRemoveOnlyNonterminal(t *testing.T) {
 		api.TaskStateFailed,
 		api.TaskStateRejected,
 		api.TaskStateRemove,
-		// no TaskStateOrphaned becaused that's not a state the task can be in
+		// no TaskStateOrphaned because that's not a state the task can be in
 		// on the agent
 	} {
 		// capture state variable here to run in parallel

@@ -1,10 +1,12 @@
 package replicated
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/docker/go-events"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/manager/orchestrator/testutils"
 	"github.com/docker/swarmkit/manager/state"
@@ -12,7 +14,6 @@ import (
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 )
 
 func TestUpdaterRollback(t *testing.T) {
@@ -26,14 +27,19 @@ func TestUpdaterRollback(t *testing.T) {
 }
 
 func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_FailureAction, setMonitor bool, useSpecVersion bool) {
-	ctx := context.Background()
+	// this test should complete within 20 seconds. if not, bail out
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	s := store.NewMemoryStore(nil)
 	assert.NotNil(t, s)
 	defer s.Close()
 
 	orchestrator := NewReplicatedOrchestrator(s)
-	defer orchestrator.Stop()
 
+	// TODO(dperny): these are used with atomic.StoreUint32 and
+	// atomic.LoadUint32. using atomic primitives is bad practice and easy to
+	// mess up
 	var (
 		failImage1 uint32
 		failImage2 uint32
@@ -51,38 +57,41 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 	go func() {
 		failedLast := false
 		for {
+			var e events.Event
 			select {
-			case e := <-watchUpdate:
-				task := e.(api.EventUpdateTask).Task
-				if task.DesiredState == task.Status.State {
-					continue
-				}
-				if task.DesiredState == api.TaskStateRunning && task.Status.State != api.TaskStateFailed && task.Status.State != api.TaskStateRunning {
-					err := s.Update(func(tx store.Tx) error {
-						task = store.GetTask(tx, task.ID)
-						// Never fail two image2 tasks in a row, so there's a mix of
-						// failed and successful tasks for the rollback.
-						if task.Spec.GetContainer().Image == "image1" && atomic.LoadUint32(&failImage1) == 1 {
-							task.Status.State = api.TaskStateFailed
-							failedLast = true
-						} else if task.Spec.GetContainer().Image == "image2" && atomic.LoadUint32(&failImage2) == 1 && !failedLast {
-							task.Status.State = api.TaskStateFailed
-							failedLast = true
-						} else {
-							task.Status.State = task.DesiredState
-							failedLast = false
-						}
-						return store.UpdateTask(tx, task)
-					})
-					assert.NoError(t, err)
-				} else if task.DesiredState > api.TaskStateRunning {
-					err := s.Update(func(tx store.Tx) error {
-						task = store.GetTask(tx, task.ID)
+			case e = <-watchUpdate:
+			case <-ctx.Done():
+				return
+			}
+			task := e.(api.EventUpdateTask).Task
+			if task.DesiredState == task.Status.State {
+				continue
+			}
+			if task.DesiredState == api.TaskStateRunning && task.Status.State != api.TaskStateFailed && task.Status.State != api.TaskStateRunning {
+				err := s.Update(func(tx store.Tx) error {
+					task = store.GetTask(tx, task.ID)
+					// Never fail two image2 tasks in a row, so there's a mix of
+					// failed and successful tasks for the rollback.
+					if task.Spec.GetContainer().Image == "image1" && atomic.LoadUint32(&failImage1) == 1 {
+						task.Status.State = api.TaskStateFailed
+						failedLast = true
+					} else if task.Spec.GetContainer().Image == "image2" && atomic.LoadUint32(&failImage2) == 1 && !failedLast {
+						task.Status.State = api.TaskStateFailed
+						failedLast = true
+					} else {
 						task.Status.State = task.DesiredState
-						return store.UpdateTask(tx, task)
-					})
-					assert.NoError(t, err)
-				}
+						failedLast = false
+					}
+					return store.UpdateTask(tx, task)
+				})
+				assert.NoError(t, err)
+			} else if task.DesiredState > api.TaskStateRunning {
+				err := s.Update(func(tx store.Tx) error {
+					task = store.GetTask(tx, task.ID)
+					task.Status.State = task.DesiredState
+					return store.UpdateTask(tx, task)
+				})
+				assert.NoError(t, err)
 			}
 		}
 	}()
@@ -143,8 +152,32 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 	assert.NoError(t, err)
 
 	// Start the orchestrator.
+	var orchestratorError error
+	orchestratorDone := make(chan struct{})
+	// verify that the orchestrator has had a chance to run by blocking the
+	// main test routine until it has.
+	orchestratorRan := make(chan struct{})
 	go func() {
-		assert.NoError(t, orchestrator.Run(ctx))
+		close(orchestratorRan)
+		// try not to fail the test in go routines. it's racey. instead, save
+		// the error and check it in a defer
+		orchestratorError = orchestrator.Run(ctx)
+		close(orchestratorDone)
+	}()
+
+	select {
+	case <-orchestratorRan:
+	case <-ctx.Done():
+		t.Error("orchestrator did not start before test timed out")
+	}
+
+	defer func() {
+		orchestrator.Stop()
+		select {
+		case <-ctx.Done():
+		case <-orchestratorDone:
+			assert.NoError(t, orchestratorError)
+		}
 	}()
 
 	observedTask := testutils.WatchTaskCreate(t, watchCreate)
@@ -197,7 +230,13 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 
 	// Should get to the ROLLBACK_STARTED state
 	for {
-		e := <-watchServiceUpdate
+		var e events.Event
+		select {
+		case e = <-watchServiceUpdate:
+		case <-ctx.Done():
+			t.Error("test timed out before watchServiceUpdate provided an event")
+			return
+		}
 		if e.(api.EventUpdateService).Service.UpdateStatus == nil {
 			continue
 		}
@@ -226,7 +265,14 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 
 	// Should end up in ROLLBACK_COMPLETED state
 	for {
-		e := <-watchServiceUpdate
+		var e events.Event
+		select {
+		case e = <-watchServiceUpdate:
+		case <-ctx.Done():
+			t.Error("test timed out before watchServiceUpdate provided an event")
+			return
+		}
+
 		if e.(api.EventUpdateService).Service.UpdateStatus.State == api.UpdateStatus_ROLLBACK_COMPLETED {
 			break
 		}
@@ -267,7 +313,13 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 
 	// Should get to the ROLLBACK_STARTED state
 	for {
-		e := <-watchServiceUpdate
+		var e events.Event
+		select {
+		case e = <-watchServiceUpdate:
+		case <-ctx.Done():
+			t.Error("test timed out before watchServiceUpdate provided an event")
+			return
+		}
 		if e.(api.EventUpdateService).Service.UpdateStatus == nil {
 			continue
 		}
@@ -292,7 +344,13 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 	case api.UpdateConfig_PAUSE:
 		// Should end up in ROLLBACK_PAUSED state
 		for {
-			e := <-watchServiceUpdate
+			var e events.Event
+			select {
+			case e = <-watchServiceUpdate:
+			case <-ctx.Done():
+				t.Error("test timed out before watchServiceUpdate provided an event")
+				return
+			}
 			if e.(api.EventUpdateService).Service.UpdateStatus.State == api.UpdateStatus_ROLLBACK_PAUSED {
 				return
 			}
@@ -300,7 +358,13 @@ func testUpdaterRollback(t *testing.T, rollbackFailureAction api.UpdateConfig_Fa
 	case api.UpdateConfig_CONTINUE:
 		// Should end up in ROLLBACK_COMPLETE state
 		for {
-			e := <-watchServiceUpdate
+			var e events.Event
+			select {
+			case e = <-watchServiceUpdate:
+			case <-ctx.Done():
+				t.Error("test timed out before watchServiceUpdate provided an event")
+				return
+			}
 			if e.(api.EventUpdateService).Service.UpdateStatus.State == api.UpdateStatus_ROLLBACK_COMPLETED {
 				return
 			}

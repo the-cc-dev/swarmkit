@@ -788,6 +788,20 @@ file {
       json_name: "phpNamespace"
     }
     field {
+      name: "php_metadata_namespace"
+      number: 44
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "phpMetadataNamespace"
+    }
+    field {
+      name: "ruby_package"
+      number: 45
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "rubyPackage"
+    }
+    field {
       name: "uninterpreted_option"
       number: 999
       label: LABEL_REPEATED
@@ -2377,6 +2391,16 @@ file {
         type_name: ".docker.swarmkit.v1.Mount.BindOptions.Propagation"
         json_name: "propagation"
       }
+      field {
+        name: "nonrecursive"
+        number: 2
+        label: LABEL_OPTIONAL
+        type: TYPE_BOOL
+        options {
+          65004: "NonRecursive"
+        }
+        json_name: "nonrecursive"
+      }
       enum_type {
         name: "Propagation"
         value {
@@ -2491,10 +2515,17 @@ file {
         label: LABEL_OPTIONAL
         type: TYPE_UINT32
         options {
-          65003: "os.FileMode"
           65001: 0
+          65003: "os.FileMode"
         }
         json_name: "mode"
+      }
+      field {
+        name: "options"
+        number: 3
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "options"
       }
     }
     enum_type {
@@ -2646,8 +2677,8 @@ file {
       type: TYPE_MESSAGE
       type_name: ".google.protobuf.Duration"
       options {
-        65011: 1
         65001: 0
+        65011: 1
       }
       json_name: "delay"
     }
@@ -3090,8 +3121,8 @@ file {
         }
       }
       options {
-        62023: "PublishMode"
         62001: 0
+        62023: "PublishMode"
       }
     }
   }
@@ -3555,6 +3586,13 @@ file {
       type_name: ".docker.swarmkit.v1.Platform"
       json_name: "platforms"
     }
+    field {
+      name: "max_replicas"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_UINT64
+      json_name: "maxReplicas"
+    }
   }
   message_type {
     name: "JoinTokens"
@@ -3790,11 +3828,14 @@ file {
       label: LABEL_OPTIONAL
       type: TYPE_UINT32
       options {
-        65003: "os.FileMode"
         65001: 0
+        65003: "os.FileMode"
       }
       json_name: "mode"
     }
+  }
+  message_type {
+    name: "RuntimeTarget"
   }
   message_type {
     name: "SecretReference"
@@ -3849,6 +3890,15 @@ file {
       type_name: ".docker.swarmkit.v1.FileTarget"
       oneof_index: 0
       json_name: "file"
+    }
+    field {
+      name: "runtime"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".docker.swarmkit.v1.RuntimeTarget"
+      oneof_index: 0
+      json_name: "runtime"
     }
     oneof_decl {
       name: "target"
@@ -4026,6 +4076,14 @@ file {
         type: TYPE_STRING
         oneof_index: 0
         json_name: "registry"
+      }
+      field {
+        name: "Config"
+        number: 3
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        oneof_index: 0
+        json_name: "Config"
       }
       oneof_decl {
         name: "source"
@@ -4207,8 +4265,8 @@ file {
       }
     }
     options {
-      62023: "NodeRole"
       62001: 0
+      62023: "NodeRole"
     }
   }
   syntax: "proto3"
@@ -4875,6 +4933,21 @@ file {
       type: TYPE_MESSAGE
       type_name: ".docker.swarmkit.v1.ContainerSpec.SysctlsEntry"
       json_name: "sysctls"
+    }
+    field {
+      name: "memory_swap"
+      number: 27
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "memorySwap"
+    }
+    field {
+      name: "memory_swappiness"
+      number: 28
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Int64Value"
+      json_name: "memorySwappiness"
     }
     nested_type {
       name: "LabelsEntry"
@@ -5717,6 +5790,13 @@ file {
       type_name: ".docker.swarmkit.v1.NetworkAttachment"
       json_name: "attachments"
     }
+    field {
+      name: "VXLANUDPPort"
+      number: 11
+      label: LABEL_OPTIONAL
+      type: TYPE_UINT32
+      json_name: "VXLANUDPPort"
+    }
     options {
       70001 {
         1 {
@@ -5802,6 +5882,13 @@ file {
       type: TYPE_MESSAGE
       type_name: ".docker.swarmkit.v1.UpdateStatus"
       json_name: "updateStatus"
+    }
+    field {
+      name: "pending_delete"
+      number: 7
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+      json_name: "pendingDelete"
     }
     options {
       70001 {
@@ -6116,6 +6203,13 @@ file {
       }
       json_name: "ipam"
     }
+    field {
+      name: "pending_delete"
+      number: 6
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+      json_name: "pendingDelete"
+    }
     options {
       70001 {
         1 {
@@ -6226,6 +6320,13 @@ file {
       label: LABEL_OPTIONAL
       type: TYPE_UINT32
       json_name: "subnetSize"
+    }
+    field {
+      name: "VXLANUDPPort"
+      number: 13
+      label: LABEL_OPTIONAL
+      type: TYPE_UINT32
+      json_name: "VXLANUDPPort"
     }
     nested_type {
       name: "BlacklistedCertificatesEntry"
@@ -8058,8 +8159,8 @@ file {
       type: TYPE_MESSAGE
       type_name: ".google.protobuf.Duration"
       options {
-        65011: 1
         65001: 0
+        65011: 1
       }
       json_name: "period"
     }
@@ -8958,6 +9059,13 @@ file {
       type: TYPE_UINT64
       json_name: "nodes"
     }
+    field {
+      name: "learners"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_UINT64
+      json_name: "learners"
+    }
   }
   message_type {
     name: "ConfChange"
@@ -9104,13 +9212,17 @@ file {
       name: "ConfChangeUpdateNode"
       number: 2
     }
+    value {
+      name: "ConfChangeAddLearnerNode"
+      number: 3
+    }
   }
   options {
-    63017: 1
-    63020: 1
-    63018: 1
     63001: 0
     63002: 0
+    63017: 1
+    63018: 1
+    63020: 1
   }
 }
 file {

@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"github.com/docker/swarmkit/template"
 	gogotypes "github.com/gogo/protobuf/types"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -197,7 +197,7 @@ func validateHealthCheck(hc *api.HealthConfig) error {
 		if err != nil {
 			return err
 		}
-		if interval != 0 && interval < time.Duration(minimumDuration) {
+		if interval != 0 && interval < minimumDuration {
 			return status.Errorf(codes.InvalidArgument, "ContainerSpec: Interval in HealthConfig cannot be less than %s", minimumDuration)
 		}
 	}
@@ -207,7 +207,7 @@ func validateHealthCheck(hc *api.HealthConfig) error {
 		if err != nil {
 			return err
 		}
-		if timeout != 0 && timeout < time.Duration(minimumDuration) {
+		if timeout != 0 && timeout < minimumDuration {
 			return status.Errorf(codes.InvalidArgument, "ContainerSpec: Timeout in HealthConfig cannot be less than %s", minimumDuration)
 		}
 	}
@@ -217,7 +217,7 @@ func validateHealthCheck(hc *api.HealthConfig) error {
 		if err != nil {
 			return err
 		}
-		if sp != 0 && sp < time.Duration(minimumDuration) {
+		if sp != 0 && sp < minimumDuration {
 			return status.Errorf(codes.InvalidArgument, "ContainerSpec: StartPeriod in HealthConfig cannot be less than %s", minimumDuration)
 		}
 	}
@@ -680,13 +680,17 @@ func (s *Server) CreateService(ctx context.Context, request *api.CreateServiceRe
 
 		return store.CreateService(tx, service)
 	})
-	if err != nil {
+	switch err {
+	case store.ErrNameConflict:
+		// Enhance the name-confict error to include the service name. The original
+		// `ErrNameConflict` error-message is included for backward-compatibility
+		// with older consumers of the API performing string-matching.
+		return nil, status.Errorf(codes.AlreadyExists, "%s: service %s already exists", err.Error(), request.Spec.Annotations.Name)
+	case nil:
+		return &api.CreateServiceResponse{Service: service}, nil
+	default:
 		return nil, err
 	}
-
-	return &api.CreateServiceResponse{
-		Service: service,
-	}, nil
 }
 
 // GetService returns a Service given a ServiceID.
@@ -718,6 +722,7 @@ func (s *Server) GetService(ctx context.Context, request *api.GetServiceRequest)
 // - Returns `NotFound` if the Service is not found.
 // - Returns `InvalidArgument` if the ServiceSpec is malformed.
 // - Returns `Unimplemented` if the ServiceSpec references unimplemented features.
+// - Returns `FailedPrecondition` if the Service is marked for removal
 // - Returns an error if the update fails.
 func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRequest) (*api.UpdateServiceResponse, error) {
 	if request.ServiceID == "" || request.ServiceVersion == nil {
@@ -749,6 +754,12 @@ func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRe
 		service = store.GetService(tx, request.ServiceID)
 		if service == nil {
 			return status.Errorf(codes.NotFound, "service %s not found", request.ServiceID)
+		}
+
+		// we couldn't do this any sooner, as we do need to be holding the lock
+		// when checking for this flag
+		if service.PendingDelete {
+			return status.Errorf(codes.FailedPrecondition, "service %s is marked for removal", request.ServiceID)
 		}
 
 		// It's not okay to update Service.Spec.Networks on its own.
@@ -844,12 +855,15 @@ func (s *Server) RemoveService(ctx context.Context, request *api.RemoveServiceRe
 	}
 
 	err := s.store.Update(func(tx store.Tx) error {
-		return store.DeleteService(tx, request.ServiceID)
+		service := store.GetService(tx, request.ServiceID)
+		if service == nil {
+			return status.Errorf(codes.NotFound, "service %s not found", request.ServiceID)
+		}
+		// mark service for removal
+		service.PendingDelete = true
+		return store.UpdateService(tx, service)
 	})
 	if err != nil {
-		if err == store.ErrNotExist {
-			return nil, status.Errorf(codes.NotFound, "service %s not found", request.ServiceID)
-		}
 		return nil, err
 	}
 	return &api.RemoveServiceResponse{}, nil
@@ -896,7 +910,12 @@ func (s *Server) ListServices(ctx context.Context, request *api.ListServicesRequ
 		}
 	})
 	if err != nil {
-		return nil, err
+		switch err {
+		case store.ErrInvalidFindBy:
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+		default:
+			return nil, err
+		}
 	}
 
 	if request.Filters != nil {

@@ -1,6 +1,8 @@
 package global
 
 import (
+	"context"
+
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager/constraint"
@@ -9,7 +11,6 @@ import (
 	"github.com/docker/swarmkit/manager/orchestrator/taskinit"
 	"github.com/docker/swarmkit/manager/orchestrator/update"
 	"github.com/docker/swarmkit/manager/state/store"
-	"golang.org/x/net/context"
 )
 
 type globalService struct {
@@ -108,8 +109,14 @@ func (g *Orchestrator) Run(ctx context.Context) error {
 	var reconcileServiceIDs []string
 	for _, s := range existingServices {
 		if orchestrator.IsGlobalService(s) {
-			g.updateService(s)
-			reconcileServiceIDs = append(reconcileServiceIDs, s.ID)
+			if s.PendingDelete {
+				// this service is marked for removal, we ask its tasks
+				// to shut down
+				orchestrator.SetServiceTasksRemove(ctx, g.store, s)
+			} else {
+				g.updateService(s)
+				reconcileServiceIDs = append(reconcileServiceIDs, s.ID)
+			}
 		}
 	}
 
@@ -127,7 +134,6 @@ func (g *Orchestrator) Run(ctx context.Context) error {
 	for {
 		select {
 		case event := <-watcher:
-			// TODO(stevvooe): Use ctx to limit running time of operation.
 			switch v := event.(type) {
 			case api.EventUpdateCluster:
 				g.cluster = v.Cluster
@@ -141,16 +147,16 @@ func (g *Orchestrator) Run(ctx context.Context) error {
 				if !orchestrator.IsGlobalService(v.Service) {
 					continue
 				}
-				g.updateService(v.Service)
-				g.reconcileServices(ctx, []string{v.Service.ID})
-			case api.EventDeleteService:
-				if !orchestrator.IsGlobalService(v.Service) {
-					continue
+				if v.Service.PendingDelete {
+					// ask the tasks to shut down
+					orchestrator.SetServiceTasksRemove(ctx, g.store, v.Service)
+					// delete the service from service map
+					delete(g.globalServices, v.Service.ID)
+					g.restarts.ClearServiceHistory(v.Service.ID)
+				} else {
+					g.updateService(v.Service)
+					g.reconcileServices(ctx, []string{v.Service.ID})
 				}
-				orchestrator.SetServiceTasksRemove(ctx, g.store, v.Service)
-				// delete the service from service map
-				delete(g.globalServices, v.Service.ID)
-				g.restarts.ClearServiceHistory(v.Service.ID)
 			case api.EventCreateNode:
 				g.updateNode(v.Node)
 				g.reconcileOneNode(ctx, v.Node)
@@ -165,6 +171,8 @@ func (g *Orchestrator) Run(ctx context.Context) error {
 			}
 		case <-g.stopChan:
 			return nil
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		g.tickTasks(ctx)
 	}
@@ -584,12 +592,4 @@ func (g *Orchestrator) SlotTuple(t *api.Task) orchestrator.SlotTuple {
 		ServiceID: t.ServiceID,
 		NodeID:    t.NodeID,
 	}
-}
-
-func isTaskCompleted(t *api.Task, restartPolicy api.RestartPolicy_RestartCondition) bool {
-	if t == nil || t.DesiredState <= api.TaskStateRunning {
-		return false
-	}
-	return restartPolicy == api.RestartOnNone ||
-		(restartPolicy == api.RestartOnFailure && t.Status.State == api.TaskStateCompleted)
 }
